@@ -7,14 +7,18 @@ import { User, Bike, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react'
 const RoleSelectScreen = () => {
   const navigate = useNavigate();
   const { switchMode, user } = useAuth();
-  const [selectedRole, setSelectedRole] = useState('passenger');
+  // A user's actual role is fixed at registration. Drivers may still choose to
+  // ride as a passenger; passengers cannot become drivers here (that needs a
+  // separate verified driver account). So we only let a driver pick a mode.
+  const canDrive = user?.role === 'driver';
+  const [selectedRole, setSelectedRole] = useState(canDrive ? 'driver' : 'passenger');
 
   const handleContinue = async () => {
-    await switchMode(selectedRole);
-    if (selectedRole === 'driver') {
-      // Direct user straight to Figma Page 2: Keep all your documents ready (Green checklist!)
-      navigate('/rider-verify');
+    if (selectedRole === 'driver' && canDrive) {
+      switchMode('driver');
+      navigate('/driver-setup');
     } else {
+      switchMode('passenger');
       navigate('/home');
     }
   };

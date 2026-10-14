@@ -1,0 +1,157 @@
+rules_version = '2';
+
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function userDoc(u) { return get(/databases/$(database)/documents/users/$(u)).data; }
+    function isAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(uid()))
+        && userDoc(uid()).role == 'admin';
+    }
+
+    // ---- users ------------------------------------------------------------
+    match /users/{userId} {
+      allow read: if isSignedIn();
+
+      // Create own profile only; never as admin.
+      allow create: if isSignedIn()
+        && userId == uid()
+        && request.resource.data.role != 'admin';
+
+      // Admin may edit anyone. Owner may edit self but can neither grant
+      // themselves admin nor self-approve/reject verification. They MAY set
+      // verificationStatus to 'pending' (submitting for review).
+      allow update: if isAdmin()
+        || (isSignedIn() && userId == uid()
+            && request.resource.data.role == resource.data.role
+            && request.resource.data.role != 'admin'
+            && (
+              request.resource.data.verificationStatus == resource.data.verificationStatus
+              || request.resource.data.verificationStatus == 'pending'
+            ));
+
+      allow delete: if isAdmin();
+    }
+
+    // ---- driverProfiles ---------------------------------------------------
+    match /driverProfiles/{driverId} {
+      allow read: if isSignedIn();
+      // Any signed-in user may create/update profile docs (needed for driver
+      // setup, availability, location, and simulated-driver location writes).
+      // Only an admin can set an 'approved'/'rejected' verification status.
+      allow create: if isSignedIn();
+      allow update: if isAdmin()
+        || (isSignedIn() && (
+             request.resource.data.verificationStatus == resource.data.verificationStatus
+             || request.resource.data.verificationStatus == 'pending'
+             || !('verificationStatus' in request.resource.data)
+           ));
+      allow delete: if isAdmin();
+    }
+
+    // ---- verificationApplications ----------------------------------------
+    match /verificationApplications/{appId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.uid == uid());
+
+      // Applicant creates/updates their own PENDING application; cannot set the
+      // review outcome. Admin may set approved/rejected via update.
+      allow create: if isSignedIn()
+        && request.resource.data.uid == uid()
+        && request.resource.data.status == 'pending';
+      allow update: if isAdmin()
+        || (isSignedIn() && resource.data.uid == uid()
+            && request.resource.data.status == 'pending');
+      allow delete: if isAdmin();
+    }
+
+    // ---- rideRequests (the FSM) ------------------------------------------
+    match /rideRequests/{rideId} {
+      allow read: if isSignedIn();
+
+      // Rider creates their own ride in the 'searching' state only.
+      allow create: if isSignedIn()
+        && request.resource.data.riderId == uid()
+        && request.resource.data.status == 'searching';
+
+      // The actor is treated as a participant if they are the assigned driver,
+      // the ride's rider (covers the simulator), or an admin.
+      function isParticipant() {
+        return isAdmin()
+          || resource.data.riderId == uid()
+          || resource.data.driverId == uid();
+      }
+      function from(s) { return resource.data.status == s; }
+      function to(s) { return request.resource.data.status == s; }
+      function rideFieldsOnly(fields) {
+        return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+      }
+
+      // Allowed FSM edges:
+      //  searching    -> accepted | cancelled | no_driver_found
+      //  accepted     -> driver_arriving | cancelled
+      //  driver_arriving -> driver_arrived | cancelled
+      //  driver_arrived  -> in_progress | cancelled
+      //  in_progress  -> completed
+      //  no_driver_found -> searching | cancelled
+      allow update: if isSignedIn() && (
+        isAdmin()
+        // A driver claims a searching ride (sets themselves as driver).
+        || (from('searching') && to('accepted')
+            && resource.data.riderId != uid()
+            && request.resource.data.driverId == uid()
+            && rideFieldsOnly(['status', 'driverId', 'driverInfo', 'acceptedAt', 'updatedAt', 'statusHistory']))
+        // The simulator claims as the rider's session on behalf of a mock driver.
+        || (from('searching') && to('accepted') && resource.data.riderId == uid()
+            && rideFieldsOnly(['status', 'driverId', 'driverInfo', 'acceptedAt', 'updatedAt', 'statusHistory']))
+        // Rider may cancel while still waiting / before pickup verification.
+        || (resource.data.riderId == uid()
+            && (to('cancelled'))
+            && (from('searching') || from('accepted') || from('driver_arriving') || from('driver_arrived'))
+            && rideFieldsOnly(['status', 'cancelledBy', 'updatedAt', 'statusHistory']))
+        // Rider may retry a failed search.
+        || (resource.data.riderId == uid() && from('no_driver_found') && to('searching')
+            && rideFieldsOnly(['status', 'createdAt', 'updatedAt', 'statusHistory']))
+        // Lifecycle advancement by a participant, validating each edge.
+        || (isParticipant() && from('accepted') && to('driver_arriving')
+            && rideFieldsOnly(['status', 'updatedAt', 'statusHistory']))
+        || (isParticipant() && from('driver_arriving') && to('driver_arrived')
+            && rideFieldsOnly(['status', 'updatedAt', 'statusHistory']))
+        || (isParticipant() && from('driver_arrived') && to('in_progress')
+            && request.resource.data.otpVerified == true
+            && rideFieldsOnly(['status', 'otpVerified', 'otp', 'updatedAt', 'statusHistory']))
+        || (isParticipant() && from('in_progress') && to('completed')
+            && rideFieldsOnly(['status', 'completedAt', 'updatedAt', 'statusHistory']))
+        // OTP attempt counter bump (status unchanged) by a participant.
+        || (resource.data.driverId == uid() && from('driver_arrived') && to('driver_arrived')
+            && request.resource.data.otpAttempts == resource.data.otpAttempts + 1
+            && rideFieldsOnly(['otpAttempts', 'updatedAt']))
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // ---- rides (durable history) -----------------------------------------
+    match /rides/{rideId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && (resource.data.riderId == uid() || resource.data.driverId == uid()));
+      // Created at completion by a participant of the trip.
+      allow create: if isSignedIn()
+        && (request.resource.data.riderId == uid() || request.resource.data.driverId == uid()
+            || isAdmin());
+      allow update: if isAdmin()
+        || (isSignedIn() && (resource.data.riderId == uid() || resource.data.driverId == uid()));
+      allow delete: if isAdmin();
+    }
+
+    // ---- reports ----------------------------------------------------------
+    match /reports/{reportId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.reporterId == uid());
+      allow create: if isSignedIn() && request.resource.data.reporterId == uid();
+      allow update, delete: if isAdmin();
+    }
+  }
+}

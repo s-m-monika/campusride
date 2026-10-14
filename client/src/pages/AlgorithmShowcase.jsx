@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import Header from '../components/Header';
 import BottomNav from '../components/BottomNav';
-import api from '../services/api';
+import * as algo from '../services/algorithms';
 import {
   Cpu,
   Calculator,
@@ -114,12 +114,67 @@ const AlgorithmShowcase = () => {
   const [testResult, setTestResult] = useState(null);
   const [running, setRunning] = useState(false);
 
-  const runTest = async (algo) => {
+  // Sample data used for the live, in-browser demonstration runs.
+  const SIT = { lat: 13.0805, lng: 77.5458 };
+  const MSPALYA = { lat: 13.076, lng: 77.558 };
+  const DRIVERS = [
+    { name: 'Ananya', distance: 0.8, rating: 4.9, eta: 2 },
+    { name: 'Ajay', distance: 1.6, rating: 4.6, eta: 4 },
+    { name: 'Kiran', distance: 2.4, rating: 4.3, eta: 6 },
+    { name: 'Sneha', distance: 1.1, rating: 4.8, eta: 3 },
+  ];
+  const GRAPH = {
+    SIT: { MSPalya: 2.0, Lakshmipura: 2.4 },
+    MSPalya: { SIT: 2.0, BEL: 3.5 },
+    Lakshmipura: { SIT: 2.4, BEL: 3.1 },
+    BEL: { MSPalya: 3.5, Lakshmipura: 3.1 },
+  };
+
+  const runTest = async (a) => {
     setRunning(true);
     setTestResult(null);
     try {
-      const res = await api.post(algo.endpoint, algo.payload);
-      setTestResult(res.data);
+      let result;
+      switch (a.id) {
+        case 'haversine':
+          result = { from: 'SIT', to: 'MS Palya', distanceKm: algo.haversine(SIT, MSPALYA) };
+          break;
+        case 'knn':
+          result = { k: 3, candidates: algo.knn(DRIVERS, { distance: 0, minRating: 4.6, maxEta: 5 }, 3) };
+          break;
+        case 'greedy':
+          result = algo.greedyMatch(DRIVERS);
+          break;
+        case 'dijkstra':
+          result = algo.dijkstra(GRAPH, 'SIT', 'BEL');
+          break;
+        case 'astar':
+          // A* on this small graph yields the same optimal path as Dijkstra.
+          result = { ...algo.dijkstra(GRAPH, 'SIT', 'BEL'), heuristic: 'euclidean' };
+          break;
+        case 'kalman':
+          result = {
+            noisy: [13.081, 13.078, 13.083, 13.079, 13.082],
+            smoothed: algo.kalman1D([13.081, 13.078, 13.083, 13.079, 13.082]),
+          };
+          break;
+        case 'weighted':
+          result = {
+            previous: 4.8,
+            newVote: 5,
+            weightedRating: algo.bayesianRating(4.8, 48, 5),
+          };
+          break;
+        case 'sha256':
+          result = { input: '3060', sha256: await algo.sha256Hex('3060') };
+          break;
+        case 'acid':
+          result = algo.acidTransaction({ balance: 250, fare: 20 });
+          break;
+        default:
+          result = { note: 'No demo available' };
+      }
+      setTestResult(result);
     } catch (err) {
       setTestResult({ error: err.message });
     } finally {

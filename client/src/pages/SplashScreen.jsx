@@ -1,15 +1,11 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ShieldCheck, Sparkles, ArrowRight } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
 
 const SplashScreen = () => {
   const navigate = useNavigate();
-  const { logout } = useAuth();
 
   const handleGetStarted = () => {
-    // Clear any past session so user always gets the real Login/OTP onboarding flow
-    logout();
     navigate('/login');
   };
 

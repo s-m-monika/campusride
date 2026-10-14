@@ -25,7 +25,7 @@ const Header = ({
 
   return (
     <>
-      <header className="px-5 py-3.5 flex items-center justify-between bg-white/95 backdrop-blur-md sticky top-0 z-30 border-b border-gray-100">
+      <header className="px-5 pb-3.5 pt-safe-plus flex items-center justify-between bg-white/95 backdrop-blur-md sticky top-0 z-30 border-b border-gray-100">
         <div className="flex items-center space-x-3">
           {showBack ? (
             <button

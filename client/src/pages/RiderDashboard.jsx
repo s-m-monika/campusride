@@ -1,408 +1,444 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { useRide } from '../context/RideContext';
 import Header from '../components/Header';
 import BottomNav from '../components/BottomNav';
-import api from '../services/api';
+import MapView from '../components/MapView';
 import {
-  Bike,
-  Car,
-  Star,
+  setDriverAvailability,
+  setDriverLocation,
+  listenOpenRequestsForDriver,
+  listenActiveRideForDriver,
+  claimRideRequest,
+  advanceRideStatus,
+  updateRideRequest,
+  archiveCompletedRide,
+  getRideRequest,
+} from '../services/firestore';
+import { watchPositionThrottled, getCurrentPosition } from '../services/location';
+import RideRequestCard from '../components/RideRequestCard';
+import RecentRides from '../components/RecentRides';
+import {
+  RIDE_STATUS,
+  VERIFICATION_STATUS,
+  OTP_MAX_ATTEMPTS,
+  CURRENCY,
+} from '../config/appConfig';
+import {
   Power,
-  ShieldCheck,
+  Star,
+  MapPin,
   CheckCircle2,
   Navigation,
-  Phone,
-  User,
-  MapPin,
-  Clock,
-  Sparkles,
-  AlertCircle
+  Loader2,
+  AlertCircle,
+  ShieldAlert,
+  Bike,
 } from 'lucide-react';
 
 const RiderDashboard = () => {
   const navigate = useNavigate();
-  const { user, driverProfile, refreshDriverProfile, switchMode } = useAuth();
-  const { incomingDriverRequest, setIncomingDriverRequest } = useRide();
+  const { uid, user, driverProfile, switchMode } = useAuth();
 
-  const [isOnline, setIsOnline] = useState(true);
-  const [activeDriverRide, setActiveDriverRide] = useState(null);
+  const [online, setOnline] = useState(false);
+  const [myLoc, setMyLoc] = useState(null);
+  const [locError, setLocError] = useState('');
+  const [openRequests, setOpenRequests] = useState([]);
+  const [activeRide, setActiveRide] = useState(null);
   const [enteredPin, setEnteredPin] = useState('');
   const [pinError, setPinError] = useState('');
-  const [actionLoading, setActionLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [claimError, setClaimError] = useState('');
+  const [listenError, setListenError] = useState('');
+  // Requests this driver declined / let expire — hidden locally so the driver
+  // isn't re-shown the same card (the request stays open for other drivers).
+  const [dismissed, setDismissed] = useState(() => new Set());
+  const stopWatchRef = useRef(null);
+  const pinkEligible = !!driverProfile?.pinkRideEligible;
 
+  const dismiss = (ride) => setDismissed((prev) => new Set(prev).add(ride.id));
+  const visibleRequests = openRequests.filter((r) => !dismissed.has(r.id));
+
+  // No verification gate for drivers — anyone in driver mode can operate.
+  // (Verification status is still shown as a badge, but never blocks.)
+  const approved = true;
+
+  // Listen for this driver's active (claimed) ride.
   useEffect(() => {
-    if (!driverProfile) {
-      refreshDriverProfile();
+    if (!uid) return undefined;
+    const unsub = listenActiveRideForDriver(uid, setActiveRide);
+    return unsub;
+  }, [uid]);
+
+  // Listen for open requests whenever online and not already on a trip.
+  // Depends only on stable primitives so it doesn't churn on every auth tick.
+  useEffect(() => {
+    if (!online || activeRide) {
+      setOpenRequests([]);
+      return undefined;
     }
-  }, [driverProfile, refreshDriverProfile]);
+    setListenError('');
+    const unsub = listenOpenRequestsForDriver(
+      { uid, pinkEligible },
+      setOpenRequests,
+      (err) => setListenError(err.code === 'permission-denied'
+        ? 'Permission denied reading ride requests. Publish the latest Firestore rules.'
+        : `Live updates error: ${err.message}`)
+    );
+    return unsub;
+  }, [online, activeRide?.id, uid, pinkEligible]);
+
+  // Location sharing: starts only when the driver goes online and grants
+  // permission; stops when offline or on unmount. Writes are throttled.
+  const startSharing = async () => {
+    setLocError('');
+    try {
+      const first = await getCurrentPosition();
+      setMyLoc(first);
+      await setDriverLocation(uid, first.lat, first.lng);
+    } catch (e) {
+      setLocError(e.message);
+      throw e;
+    }
+    stopWatchRef.current = watchPositionThrottled(
+      async (pos) => {
+        setMyLoc(pos);
+        try {
+          await setDriverLocation(uid, pos.lat, pos.lng);
+        } catch {
+          /* transient write error ignored; next tick retries */
+        }
+      },
+      (err) => setLocError(err.message)
+    );
+  };
+
+  const stopSharing = () => {
+    if (stopWatchRef.current) {
+      stopWatchRef.current();
+      stopWatchRef.current = null;
+    }
+  };
+
+  useEffect(() => () => stopSharing(), []);
 
   const toggleOnline = async () => {
-    const nextStatus = isOnline ? 'Offline' : 'Available';
+    setLocError('');
+    if (!online) {
+      // Go online immediately so requests flow. Location sharing is best-effort:
+      // if the user denies GPS we still stay online (the rider just won't see a
+      // live dot). We never block receiving requests on location permission.
+      await setDriverAvailability(uid, true);
+      setOnline(true);
+      startSharing().catch(() => {
+        /* locError already set; staying online is fine */
+      });
+    } else {
+      stopSharing();
+      await setDriverAvailability(uid, false);
+      setOnline(false);
+    }
+  };
+
+  const accept = async (ride) => {
+    setClaimError('');
+    setBusy(true);
     try {
-      await api.patch('/drivers/availability', { availability: nextStatus });
-      setIsOnline(!isOnline);
-      if (driverProfile) {
-        driverProfile.availability = nextStatus;
-      }
+      // Atomic single-claim transaction — only one driver can win.
+      await claimRideRequest(ride.id, {
+        uid,
+        name: driverProfile?.name || user?.name || 'Captain',
+        phone: user?.phone || '',
+        vehicleType: driverProfile?.vehicleType || '',
+        vehicleModel: driverProfile?.vehicleModel || '',
+        vehicleNumber: driverProfile?.vehicleNumber || '',
+        rating: driverProfile?.rating || 0,
+        usn: driverProfile?.usn || user?.usn || '',
+      });
+      // Immediately move to "arriving".
+      await advanceRideStatus(ride.id, RIDE_STATUS.ACCEPTED, RIDE_STATUS.DRIVER_ARRIVING);
     } catch (e) {
-      console.warn('Could not update status:', e.message);
-    }
-  };
-
-  const handleAcceptRequest = async () => {
-    if (!incomingDriverRequest) return;
-    setActionLoading(true);
-    const rideId = incomingDriverRequest._id || incomingDriverRequest.id;
-
-    try {
-      const res = await api.patch(`/rides/${rideId}/status`, { status: 'DRIVER_ARRIVING' });
-      if (res.data.success) {
-        setActiveDriverRide(res.data.ride);
-        setIncomingDriverRequest(null);
-      }
-    } catch (err) {
-      console.error('Accept error:', err);
+      setClaimError(e.message || 'Could not accept — it may have been taken.');
     } finally {
-      setActionLoading(false);
+      setBusy(false);
     }
   };
 
-  const handleStartRide = async () => {
+  const markArrived = async () => {
+    setBusy(true);
+    try {
+      await advanceRideStatus(activeRide.id, RIDE_STATUS.DRIVER_ARRIVING, RIDE_STATUS.DRIVER_ARRIVED);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // OTP verification before starting. Attempts are limited and the code is
+  // invalidated on success. NOTE: this is demonstration-grade — see docs.
+  const verifyAndStart = async () => {
     setPinError('');
-    if (!enteredPin || enteredPin.length !== 4) {
-      setPinError('Please enter the 4-digit PIN given by the passenger.');
+    const fresh = await getRideRequest(activeRide.id);
+    if (!fresh) return;
+    if ((fresh.otpAttempts || 0) >= OTP_MAX_ATTEMPTS) {
+      setPinError('Too many incorrect attempts. Ask the rider to re-request if needed.');
       return;
     }
-
-    setActionLoading(true);
-    const rideId = activeDriverRide._id || activeDriverRide.id;
-
+    if (fresh.status !== RIDE_STATUS.DRIVER_ARRIVED) {
+      setPinError('Mark that you have arrived at pickup first.');
+      return;
+    }
+    if (enteredPin.trim() !== String(fresh.otp)) {
+      await updateRideRequest(activeRide.id, { otpAttempts: (fresh.otpAttempts || 0) + 1 });
+      setPinError('Incorrect PIN. Please try again.');
+      return;
+    }
+    setBusy(true);
     try {
-      const res = await api.patch(`/rides/${rideId}/status`, {
-        status: 'RIDE_STARTED',
-        enteredPin
+      await advanceRideStatus(activeRide.id, RIDE_STATUS.DRIVER_ARRIVED, RIDE_STATUS.IN_PROGRESS, {
+        otpVerified: true,
+        otp: null, // invalidate the code after successful verification
       });
-
-      if (res.data.success) {
-        setActiveDriverRide(res.data.ride);
-      } else {
-        setPinError(res.data.message || 'Incorrect PIN. Verification failed.');
-      }
-    } catch (err) {
-      setPinError(err.message || 'PIN verification failed.');
+      setEnteredPin('');
+    } catch (e) {
+      setPinError(e.message);
     } finally {
-      setActionLoading(false);
+      setBusy(false);
     }
   };
 
-  const handleCompleteRide = async () => {
-    setActionLoading(true);
-    const rideId = activeDriverRide._id || activeDriverRide.id;
-
+  const completeRide = async () => {
+    setBusy(true);
     try {
-      const res = await api.patch(`/rides/${rideId}/status`, {
-        status: 'RIDE_COMPLETED',
-        paymentStatus: 'Paid',
-        paymentMethod: 'UPI'
+      // Archive to durable history, then mark the request completed.
+      await archiveCompletedRide(activeRide);
+      await advanceRideStatus(activeRide.id, RIDE_STATUS.IN_PROGRESS, RIDE_STATUS.COMPLETED, {
+        completedAt: new Date(),
       });
-
-      if (res.data.success) {
-        setActiveDriverRide(null);
-        refreshDriverProfile();
-        alert('Ride completed successfully! Availability reset to Online.');
-      }
-    } catch (err) {
-      console.error('Complete error:', err);
     } finally {
-      setActionLoading(false);
+      setBusy(false);
     }
   };
 
-  const handleSimulateRequest = () => {
-    setIncomingDriverRequest({
-      _id: 'r_demo_' + Date.now(),
-      id: 'r_demo_' + Date.now(),
-      passengerId: 'u_passenger_1',
-      pickup: 'Sambhram Institute of Technology',
-      destination: 'MS Palya Circle',
-      distance: 2.0,
-      fare: 20,
-      eta: 4,
-      otp: '3060',
-      vehicleType: driverProfile?.vehicleType || 'Bike',
-      pinkRide: !!driverProfile?.pinkRideEligible,
-      passengerDetails: {
-        name: 'Meghana',
-        phone: '9876543210',
-        usn: '1ST23CS001'
-      }
-    });
-  };
-
-  const currentVehicleType = driverProfile?.vehicleType || 'Bike';
-  const driverName = driverProfile?.name || user?.name || 'Ajay Kumar';
-  const initials = driverName
-    .split(' ')
-    .map((n) => n[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2);
+  const driverName = driverProfile?.name || user?.name || 'Captain';
+  const initials = driverName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-50">
       <Header
         title="Captain Dashboard"
         showBack={false}
-        showHelp={true}
+        showHelp
         rightElement={
           <button
-            onClick={() => switchMode('passenger')}
-            className="text-[10px] font-extrabold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100 hover:bg-blue-100"
+            onClick={() => {
+              switchMode('passenger');
+              navigate('/home');
+            }}
+            className="text-[10px] font-extrabold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100"
           >
-            Switch to Passenger
+            Passenger mode
           </button>
         }
       />
 
       <div className="flex-1 px-5 py-4 space-y-4 overflow-y-auto">
-        {/* ONLINE / OFFLINE TOGGLE BANNER */}
+        {/* Optional, non-blocking verification note (does not restrict usage) */}
+        {driverProfile?.verificationStatus !== VERIFICATION_STATUS.APPROVED && (
+          <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl flex items-start space-x-2">
+            <ShieldAlert className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+            <div className="text-[11px] text-blue-900">
+              <span className="font-bold">Tip:</span> submit your driver details for a verified badge.{' '}
+              <button onClick={() => navigate('/driver-setup')} className="font-bold underline">
+                Review driver details
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Online toggle */}
         <div className="p-4 bg-white rounded-3xl border border-gray-200 shadow-sm flex items-center justify-between">
           <div className="flex items-center space-x-3">
-            <div
-              className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold transition-all ${
-                isOnline ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-100 text-gray-400'
-              }`}
-            >
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${online ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-100 text-gray-400'}`}>
               <Power className="w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center space-x-1.5">
-                <h3 className="font-black text-base text-gray-900">
-                  {isOnline ? 'You are Online' : 'You are Offline'}
-                </h3>
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    isOnline ? 'bg-emerald-500 animate-ping' : 'bg-gray-400'
-                  }`}
-                />
-              </div>
+              <h3 className="font-black text-base text-gray-900">{online ? 'You are online' : 'You are offline'}</h3>
               <p className="text-xs text-gray-500">
-                {isOnline ? 'Ready to receive SAIT campus rides' : 'Not accepting new rides'}
+                {online ? 'Sharing location · receiving requests' : 'Go online to receive rides'}
               </p>
             </div>
           </div>
-
           <button
             onClick={toggleOnline}
-            className={`px-4 py-2 rounded-2xl font-black text-xs transition-all shadow-sm ${
-              isOnline
-                ? 'bg-red-50 text-red-600 hover:bg-red-100 border border-red-200'
-                : 'bg-emerald-600 text-white hover:bg-emerald-700'
+            className={`px-4 py-2 rounded-2xl font-black text-xs ${
+              online ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-emerald-600 text-white'
             }`}
           >
-            {isOnline ? 'Go Offline' : 'Go Online'}
+            {online ? 'Go offline' : 'Go online'}
           </button>
         </div>
 
-        {/* DRIVER STATS CARD (CLEAN INITIALS, NO FUNNY CARTOON AVATARS) */}
-        <div className="p-5 bg-gradient-to-br from-slate-900 to-slate-800 text-white rounded-3xl shadow-lg relative overflow-hidden">
+        {locError && (
+          <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-2xl flex items-center space-x-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{locError}</span>
+          </div>
+        )}
+
+        {/* Driver identity card */}
+        <div className="p-5 bg-gradient-to-br from-slate-900 to-slate-800 text-white rounded-3xl shadow-lg">
           <div className="flex items-start justify-between">
             <div className="flex items-center space-x-3">
-              <div className="w-14 h-14 rounded-2xl bg-white/10 border-2 border-white/20 text-white font-black text-lg flex items-center justify-center shadow-inner">
+              <div className="w-14 h-14 rounded-2xl bg-white/10 border-2 border-white/20 font-black text-lg flex items-center justify-center">
                 {initials}
               </div>
               <div>
                 <h2 className="text-lg font-black">{driverName}</h2>
-                <p className="text-xs text-sky-400 font-mono">{driverProfile?.usn || user?.usn || '1ST23CS042'}</p>
-                <div className="flex items-center space-x-2 mt-1">
-                  <span className="text-xs font-black text-amber-400 flex items-center">
+                <p className="text-xs text-sky-400 font-mono">{driverProfile?.usn || user?.usn || ''}</p>
+                <div className="flex items-center space-x-2 mt-1 text-xs">
+                  <span className="font-black text-amber-400 flex items-center">
                     <Star className="w-3.5 h-3.5 fill-amber-400 mr-1" />
-                    {driverProfile?.rating || '4.8'}
+                    {driverProfile?.rating || '—'}
                   </span>
-                  <span className="text-slate-400 text-xs">•</span>
-                  <span className="text-xs text-slate-300 font-medium">
-                    {driverProfile?.completedRides || 48} rides
-                  </span>
+                  <span className="text-slate-400">·</span>
+                  <span className="text-slate-300">{driverProfile?.completedRides || 0} rides</span>
                 </div>
               </div>
             </div>
-
-            <div className="text-right">
-              <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full block mb-1">
-                Verified DL & RC
-              </span>
-              {driverProfile?.pinkRideEligible && (
-                <span className="text-[9px] font-black uppercase px-2 py-0.5 bg-pink-500/30 text-pink-200 border border-pink-400/30 rounded-full">
-                  Pink Rider 👩
-                </span>
-              )}
-            </div>
+            <span className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${approved ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}`}>
+              {approved ? 'Verified' : driverProfile?.verificationStatus || 'unverified'}
+            </span>
           </div>
-
-          <div className="mt-4 pt-3 border-t border-slate-700/60 grid grid-cols-2 gap-2 text-xs">
-            <div>
-              <span className="text-slate-400 block text-[10px]">VEHICLE</span>
-              <span className="font-extrabold text-white">
-                {driverProfile?.vehicleNumber || 'KA02AB1234'} ({driverProfile?.vehicleModel || currentVehicleType})
-              </span>
-            </div>
-            <div>
-              <span className="text-slate-400 block text-[10px]">CAMPUS BASE</span>
-              <span className="font-extrabold text-white truncate block">
-                Sambhram Inst. of Tech (SAIT)
-              </span>
-            </div>
-          </div>
+          {myLoc && (
+            <p className="mt-3 pt-3 border-t border-slate-700/60 text-[11px] text-slate-300">
+              Live location: {myLoc.lat.toFixed(4)}, {myLoc.lng.toFixed(4)}
+            </p>
+          )}
         </div>
 
-        {/* INCOMING RIDE REQUEST POPUP (TWO-DEVICE DEMO) */}
-        {incomingDriverRequest && !activeDriverRide && (
-          <div className="p-5 bg-blue-50 border-2 border-blue-400 rounded-3xl shadow-xl animate-bounce-subtle">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center space-x-2">
-                <span className="w-3 h-3 rounded-full bg-blue-600 animate-ping" />
-                <h3 className="font-black text-base text-blue-950">
-                  New Ride Request! 🚨
-                </h3>
-              </div>
-              <span className="text-lg font-black text-blue-700">
-                ₹{incomingDriverRequest.fare}
-              </span>
-            </div>
-
-            <div className="space-y-2 mb-4 bg-white p-3.5 rounded-2xl border border-blue-100 text-xs">
-              <div className="flex items-center space-x-2">
-                <MapPin className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span className="font-extrabold text-gray-900 truncate">
-                  Pickup: {incomingDriverRequest.pickup}
-                </span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <MapPin className="w-4 h-4 text-red-600 shrink-0" />
-                <span className="font-extrabold text-gray-900 truncate">
-                  Drop: {incomingDriverRequest.destination}
-                </span>
-              </div>
-              <div className="pt-2 border-t border-gray-100 flex items-center justify-between text-gray-500 font-semibold text-[11px]">
-                <span>Distance: {incomingDriverRequest.distance} km</span>
-                <span>Type: {incomingDriverRequest.vehicleType}</span>
-                {incomingDriverRequest.pinkRide && (
-                  <span className="text-pink-600 font-extrabold">Pink Ride</span>
-                )}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => setIncomingDriverRequest(null)}
-                className="py-3 bg-white hover:bg-gray-100 text-gray-600 font-bold rounded-2xl text-xs border border-gray-200"
-              >
-                Decline
-              </button>
-              <button
-                onClick={handleAcceptRequest}
-                disabled={actionLoading}
-                className="py-3 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-2xl text-xs shadow-md"
-              >
-                {actionLoading ? 'Accepting...' : 'Accept Ride ✓'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ACTIVE RIDE WORKFLOW */}
-        {activeDriverRide && (
+        {/* Active ride workflow */}
+        {activeRide ? (
           <div className="p-5 bg-white rounded-3xl border-2 border-blue-500 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-black uppercase px-2.5 py-1 bg-blue-100 text-blue-800 rounded-full">
-                Active Ride: {activeDriverRide.status}
+                {activeRide.status.replace(/_/g, ' ')}
               </span>
               <span className="text-base font-black text-gray-900">
-                ₹{activeDriverRide.fare}
+                {CURRENCY}
+                {activeRide.fare}
               </span>
+            </div>
+
+            <div className="h-40 rounded-2xl overflow-hidden">
+              <MapView
+                center={[activeRide.pickupCoords.lat, activeRide.pickupCoords.lng]}
+                pickupCoords={activeRide.pickupCoords}
+                dropCoords={activeRide.destinationCoords}
+                driverCoords={myLoc}
+                driverType={activeRide.vehicleType}
+                className="h-full w-full"
+              />
             </div>
 
             <div className="text-xs space-y-1">
-              <p className="font-bold text-gray-800">
-                Route: {activeDriverRide.pickup} → {activeDriverRide.destination}
-              </p>
-              <p className="text-gray-500">
-                Trip Distance: {activeDriverRide.distance} km
-              </p>
+              <p className="flex items-center space-x-1.5"><MapPin className="w-3.5 h-3.5 text-emerald-600" /><span className="font-bold truncate">{activeRide.pickup}</span></p>
+              <p className="flex items-center space-x-1.5"><MapPin className="w-3.5 h-3.5 text-red-600" /><span className="font-bold truncate">{activeRide.destination}</span></p>
+              {activeRide.riderInfo?.name && (
+                <p className="text-gray-500">Rider: {activeRide.riderInfo.name}</p>
+              )}
             </div>
 
-            {activeDriverRide.status !== 'RIDE_STARTED' ? (
+            {/* Stepwise actions */}
+            {activeRide.status === RIDE_STATUS.DRIVER_ARRIVING && (
+              <button onClick={markArrived} disabled={busy} className={primaryBtn}>
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Navigation className="w-4 h-4" />}
+                <span>I've arrived at pickup</span>
+              </button>
+            )}
+
+            {activeRide.status === RIDE_STATUS.DRIVER_ARRIVED && (
               <div className="p-4 bg-gray-50 rounded-2xl border border-gray-200 space-y-3">
                 <div>
-                  <h4 className="font-black text-xs uppercase text-gray-800">
-                    Enter Passenger's 4-Digit PIN
-                  </h4>
-                  <p className="text-[11px] text-gray-500">
-                    Ask passenger for the PIN to verify via SHA-256 and unlock the ride.
-                  </p>
+                  <h4 className="font-black text-xs uppercase text-gray-800">Enter rider's pickup PIN</h4>
+                  <p className="text-[11px] text-gray-500">Ask the rider for the code shown on their screen.</p>
                 </div>
-
                 <input
-                  type="text"
-                  maxLength={4}
+                  inputMode="numeric"
                   value={enteredPin}
-                  onChange={(e) => setEnteredPin(e.target.value)}
-                  placeholder="3 0 6 0"
-                  className="w-full text-center text-xl font-black tracking-widest py-2 bg-white border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-400 focus:outline-none"
+                  onChange={(e) => setEnteredPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="----"
+                  className="w-full text-center text-2xl font-black tracking-[0.5em] py-2 bg-white border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-400 focus:outline-none"
                 />
-
-                {pinError && (
-                  <p className="text-xs text-red-600 font-bold">
-                    ⚠️ {pinError}
-                  </p>
-                )}
-
-                <button
-                  onClick={handleStartRide}
-                  disabled={actionLoading}
-                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-2xl text-xs shadow-md"
-                >
-                  {actionLoading ? 'Verifying PIN...' : 'Verify SHA-256 & Start Ride'}
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="p-3 bg-emerald-50 rounded-2xl border border-emerald-200 text-xs text-emerald-800 font-bold flex items-center space-x-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Ride in progress! Driving to destination...</span>
-                </div>
-
-                <button
-                  onClick={handleCompleteRide}
-                  disabled={actionLoading}
-                  className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-2xl text-sm shadow-md flex items-center justify-center space-x-2"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Complete Ride (Reached Destination)</span>
+                {pinError && <p className="text-xs text-red-600 font-bold">{pinError}</p>}
+                <button onClick={verifyAndStart} disabled={busy} className={primaryBtn}>
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                  <span>Verify PIN &amp; start ride</span>
                 </button>
               </div>
             )}
+
+            {activeRide.status === RIDE_STATUS.IN_PROGRESS && (
+              <button onClick={completeRide} disabled={busy} className={`${primaryBtn} bg-emerald-600 hover:bg-emerald-700`}>
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                <span>Complete ride</span>
+              </button>
+            )}
           </div>
+        ) : (
+          <>
+            {/* Incoming requests */}
+            {claimError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-2xl">{claimError}</div>
+            )}
+            {listenError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-2xl mb-2">
+                {listenError}
+              </div>
+            )}
+            {online && (
+              <div>
+                <p className="text-xs font-black uppercase text-gray-400 mb-2">
+                  Incoming requests ({visibleRequests.length})
+                </p>
+                {visibleRequests.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-gray-400 bg-white rounded-2xl border border-dashed border-gray-200">
+                    Waiting for ride requests…
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {visibleRequests.map((r) => (
+                      <RideRequestCard
+                        key={r.id}
+                        ride={r}
+                        busy={busy}
+                        onAccept={accept}
+                        onDecline={dismiss}
+                        onExpire={dismiss}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {!online && (
+              <div className="py-10 text-center text-sm text-gray-400">
+                <Bike className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+                Go online to start receiving campus ride requests.
+              </div>
+            )}
+          </>
         )}
 
-        {/* Simulation Shortcut */}
-        {!incomingDriverRequest && !activeDriverRide && (
-          <div className="pt-2">
-            <button
-              onClick={handleSimulateRequest}
-              className="w-full py-3 bg-white hover:bg-gray-100 text-gray-700 font-bold rounded-2xl text-xs border border-dashed border-gray-300 shadow-sm transition-colors flex items-center justify-center space-x-2"
-            >
-              <span>🧪 Demo Mode: Simulate Incoming Passenger Request</span>
-            </button>
-          </div>
-        )}
+        {/* Ride history — completed trips tracked for this captain */}
+        <RecentRides roleField="driverId" title="Your recent trips" />
       </div>
 
       <BottomNav />
     </div>
   );
 };
+
+const primaryBtn =
+  'w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-2xl text-sm shadow-md flex items-center justify-center space-x-2 disabled:opacity-60';
 
 export default RiderDashboard;

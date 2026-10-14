@@ -24,8 +24,10 @@ const BottomNav = () => {
         { to: '/profile', icon: User, label: 'Profile' }
       ];
 
+  // `isDriver` depends on `mode`; both consts above are retained for clarity.
+
   return (
-    <nav className="sticky bottom-0 z-40 bg-white/95 backdrop-blur-md border-t border-gray-100 px-4 py-2 flex items-center justify-around shadow-lg">
+    <nav className="sticky bottom-0 z-40 bg-white/95 backdrop-blur-md border-t border-gray-100 px-4 pt-2 pb-safe-plus flex items-center justify-around shadow-lg">
       {navItems.map((item) => {
         const Icon = item.icon;
         return (

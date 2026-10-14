@@ -3,34 +3,43 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import Header from '../components/Header';
 import BottomNav from '../components/BottomNav';
-import { User, Phone, Mail, Award, ShieldCheck, ArrowRightLeft, LogOut, CheckCircle2, ChevronRight } from 'lucide-react';
+import { Phone, Mail, Award, ShieldCheck, ArrowRightLeft, LogOut, CheckCircle2, ChevronRight, Smartphone } from 'lucide-react';
+import { COLLEGE_NAME, VERIFICATION_STATUS } from '../config/appConfig';
+
+const VERIFY_BADGE = {
+  approved: { text: 'Verified', cls: 'bg-emerald-100 text-emerald-800' },
+  pending: { text: 'Pending', cls: 'bg-amber-100 text-amber-800' },
+  rejected: { text: 'Rejected', cls: 'bg-red-100 text-red-800' },
+  unsubmitted: { text: 'Unverified', cls: 'bg-gray-100 text-gray-500' },
+};
 
 const ProfileScreen = () => {
   const navigate = useNavigate();
   const { user, driverProfile, mode, switchMode, logout } = useAuth();
 
-  const handleToggleMode = async () => {
+  const canDrive = user?.role === 'driver';
+
+  const handleToggleMode = () => {
     const nextMode = mode === 'passenger' ? 'driver' : 'passenger';
-    await switchMode(nextMode);
-    if (nextMode === 'driver') {
-      navigate('/driver');
-    } else {
-      navigate('/home');
-    }
+    if (nextMode === 'driver' && !canDrive) return;
+    switchMode(nextMode);
+    navigate(nextMode === 'driver' ? '/driver' : '/home');
   };
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
 
-  const userName = user?.name || 'Meghana';
+  const userName = user?.name || 'Student';
   const initials = userName
     .split(' ')
     .map((n) => n[0])
     .join('')
     .toUpperCase()
     .slice(0, 2);
+
+  const vb = VERIFY_BADGE[user?.verificationStatus] || VERIFY_BADGE.unsubmitted;
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-50">
@@ -45,58 +54,73 @@ const ProfileScreen = () => {
           <div>
             <div className="flex items-center space-x-2">
               <h2 className="text-xl font-black text-gray-900">{userName}</h2>
-              <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full">
-                SAIT Verified
+              <span className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${vb.cls}`}>
+                {vb.text}
               </span>
             </div>
-            <p className="text-xs font-mono font-bold text-red-600 mt-0.5">{user?.usn || '1ST23CS001'}</p>
-            <p className="text-xs text-gray-500 mt-0.5">Sambhram Institute of Technology (SAIT)</p>
+            {user?.usn && <p className="text-xs font-mono font-bold text-red-600 mt-0.5">{user.usn}</p>}
+            <p className="text-xs text-gray-500 mt-0.5 capitalize">{user?.role} · {COLLEGE_NAME}</p>
           </div>
         </div>
 
-        {/* Mode Switch Card */}
-        <div className="p-5 bg-gradient-to-r from-red-500 to-rose-500 text-white rounded-3xl shadow-md flex items-center justify-between">
-          <div>
-            <span className="text-[10px] uppercase font-black tracking-wider text-red-100 block">
-              Current Active Mode
-            </span>
-            <h3 className="text-lg font-black capitalize mt-0.5">
-              {mode === 'driver' ? 'Captain (Driver)' : 'Passenger (Rider)'}
-            </h3>
-            <p className="text-xs text-red-100 mt-0.5">
-              {mode === 'driver' ? 'Accepting campus ride requests' : 'Ready to search campus rides'}
-            </p>
+        {/* Mode Switch Card — only for driver accounts */}
+        {canDrive && (
+          <div className="p-5 bg-gradient-to-r from-red-500 to-rose-500 text-white rounded-3xl shadow-md flex items-center justify-between">
+            <div>
+              <span className="text-[10px] uppercase font-black tracking-wider text-red-100 block">
+                Current Active Mode
+              </span>
+              <h3 className="text-lg font-black capitalize mt-0.5">
+                {mode === 'driver' ? 'Captain (Driver)' : 'Passenger (Rider)'}
+              </h3>
+            </div>
+            <button
+              onClick={handleToggleMode}
+              className="px-4 py-2.5 bg-white hover:bg-red-50 text-red-600 font-extrabold text-xs rounded-2xl shadow-sm flex items-center space-x-1.5 active:scale-95"
+            >
+              <ArrowRightLeft className="w-3.5 h-3.5" />
+              <span>Switch</span>
+            </button>
           </div>
+        )}
 
-          <button
-            onClick={handleToggleMode}
-            className="px-4 py-2.5 bg-white hover:bg-red-50 text-red-600 font-extrabold text-xs rounded-2xl shadow-sm transition-all flex items-center space-x-1.5 active:scale-95"
-          >
-            <ArrowRightLeft className="w-3.5 h-3.5" />
-            <span>Switch</span>
-          </button>
-        </div>
-
-        {/* Quick Link to Figma Page 2 Green Checklist */}
+        {/* College ID verification link */}
         <div
-          onClick={() => navigate('/rider-verify')}
-          className="p-4 bg-emerald-50 rounded-3xl border border-emerald-200 cursor-pointer hover:bg-emerald-100/70 transition-all flex items-center justify-between shadow-xs"
+          onClick={() => navigate('/verify-id')}
+          className="p-4 bg-emerald-50 rounded-3xl border border-emerald-200 cursor-pointer hover:bg-emerald-100/70 flex items-center justify-between"
         >
           <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold">
+            <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center">
               <CheckCircle2 className="w-5 h-5" />
             </div>
             <div>
-              <h4 className="font-black text-sm text-gray-900">
-                Rider Verification Checklist
-              </h4>
-              <p className="text-[11px] text-emerald-800">
-                View Driving License, Vehicle RC & Aadhar status
-              </p>
+              <h4 className="font-black text-sm text-gray-900">College ID verification</h4>
+              <p className="text-[11px] text-emerald-800">Status: {vb.text}</p>
             </div>
           </div>
           <ChevronRight className="w-5 h-5 text-emerald-700" />
         </div>
+
+        {/* Driver setup link (driver accounts only) */}
+        {canDrive && (
+          <div
+            onClick={() => navigate('/driver-setup')}
+            className="p-4 bg-blue-50 rounded-3xl border border-blue-200 cursor-pointer hover:bg-blue-100/70 flex items-center justify-between"
+          >
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-black text-sm text-gray-900">Driver verification</h4>
+                <p className="text-[11px] text-blue-800">
+                  Status: {driverProfile?.verificationStatus || 'not submitted'}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-blue-700" />
+          </div>
+        )}
 
         {/* Account Details */}
         <div className="p-5 bg-white rounded-3xl border border-gray-200 shadow-sm space-y-3.5 text-xs">
@@ -106,22 +130,22 @@ const ProfileScreen = () => {
 
           <div className="flex items-center justify-between py-1 border-b border-gray-100">
             <span className="text-gray-500 flex items-center"><Award className="w-4 h-4 mr-2 text-gray-400" /> College USN</span>
-            <span className="font-mono font-bold text-gray-900">{user?.usn || '1ST23CS001'}</span>
+            <span className="font-mono font-bold text-gray-900">{user?.usn || '—'}</span>
           </div>
 
           <div className="flex items-center justify-between py-1 border-b border-gray-100">
             <span className="text-gray-500 flex items-center"><Phone className="w-4 h-4 mr-2 text-gray-400" /> Phone</span>
-            <span className="font-bold text-gray-900">+91 {user?.phone || '9876543210'}</span>
+            <span className="font-bold text-gray-900">{user?.phone ? `+91 ${user.phone}` : '—'}</span>
           </div>
 
           <div className="flex items-center justify-between py-1 border-b border-gray-100">
             <span className="text-gray-500 flex items-center"><Mail className="w-4 h-4 mr-2 text-gray-400" /> Email</span>
-            <span className="font-bold text-gray-900">{user?.email || 'meghana@sambhram.org'}</span>
+            <span className="font-bold text-gray-900 truncate max-w-[180px]">{user?.email || '—'}</span>
           </div>
 
           <div className="flex items-center justify-between py-1">
             <span className="text-gray-500 flex items-center"><ShieldCheck className="w-4 h-4 mr-2 text-gray-400" /> Institution</span>
-            <span className="font-bold text-gray-900">Sambhram Institute of Technology (SAIT)</span>
+            <span className="font-bold text-gray-900 text-right">{user?.college || COLLEGE_NAME}</span>
           </div>
         </div>
 
@@ -139,11 +163,25 @@ const ProfileScreen = () => {
             <p className="font-extrabold text-sm text-gray-900">
               {driverProfile.vehicleNumber} ({driverProfile.vehicleModel})
             </p>
-            <p className="text-gray-500">
-              RC: {driverProfile.rcNumber || 'Verified on file'}
-            </p>
           </div>
         )}
+
+        {/* Install app */}
+        <div
+          onClick={() => window.dispatchEvent(new Event('campusride:install'))}
+          className="p-4 bg-slate-900 text-white rounded-3xl cursor-pointer hover:bg-slate-800 flex items-center justify-between"
+        >
+          <div className="flex items-center space-x-3">
+            <div className="w-10 h-10 rounded-xl bg-white/10 text-white flex items-center justify-center">
+              <Smartphone className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="font-black text-sm">Install CampusRide</h4>
+              <p className="text-[11px] text-slate-300">Add to your home screen for one-tap access</p>
+            </div>
+          </div>
+          <ChevronRight className="w-5 h-5 text-slate-400" />
+        </div>
 
         {/* Logout */}
         <div className="pt-2">

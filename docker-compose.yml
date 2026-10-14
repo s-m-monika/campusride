@@ -1,0 +1,49 @@
+# CampusRide — docker compose
+#
+# Quick start:
+#   copy .env.docker.example .env      # then edit values if needed
+#   docker compose up --build          # build + run
+#   open http://localhost:5000
+#
+# The app serves the SPA and the API from one container. MongoDB is optional:
+# if it is unreachable the server automatically falls back to an in-memory store.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY}
+        VITE_FIREBASE_AUTH_DOMAIN: ${VITE_FIREBASE_AUTH_DOMAIN}
+        VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID}
+        VITE_FIREBASE_STORAGE_BUCKET: ${VITE_FIREBASE_STORAGE_BUCKET}
+        VITE_FIREBASE_MESSAGING_SENDER_ID: ${VITE_FIREBASE_MESSAGING_SENDER_ID}
+        VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID}
+        VITE_GOOGLE_MAPS_API_KEY: ${VITE_GOOGLE_MAPS_API_KEY}
+        VITE_COLLEGE_NAME: ${VITE_COLLEGE_NAME}
+        VITE_USN_PREFIX: ${VITE_USN_PREFIX}
+        VITE_ADMIN_EMAILS: ${VITE_ADMIN_EMAILS}
+        VITE_DEMO_MODE: ${VITE_DEMO_MODE}
+    image: campusride:latest
+    container_name: campusride-app
+    ports:
+      - "5000:5000"
+    environment:
+      PORT: "5000"
+      MONGO_URI: mongodb://mongo:27017/campusride
+    depends_on:
+      - mongo
+    restart: unless-stopped
+
+  # Optional datastore. Remove this service (and MONGO_URI above) to run fully
+  # stateless in the server's in-memory demo mode.
+  mongo:
+    image: mongo:7
+    container_name: campusride-mongo
+    volumes:
+      - mongo-data:/data/db
+    restart: unless-stopped
+
+volumes:
+  mongo-data:

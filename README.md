@@ -28,7 +28,7 @@ Open **[http://localhost:5173](http://localhost:5173)** in your browser (or open
 - Explain the **Campus Policy**: Either the Pickup or Drop location must be **Sambhram Institute of Technology**.
 - Predefined locations: Sambhram Institute of Technology, MS Palya Circle, Lakshmipura Cross, Jalahalli Cross, 8th Mile, BEL Circle.
 - Toggle **"PINK RIDE"** (Women-Safety feature): Explain that Pink Ride filters exclusively for verified female riders (Ananya, Sneha).
-- Select **Bike** (₹5/km) or **Car** (₹10/km) and click **"Search Rides & Match Captain"**.
+- Select **Bike** (₹5/km) or **Car** (₹5/km) and click **"Search Rides & Match Captain"**.
 
 ### Step 5: Explain the Algorithm Matching Screen (Figma Page 6 & 7)
 - Show the **"Pickup: SURVEY 131, Sambhram Institute of Technology"** confirmation card.
@@ -87,7 +87,7 @@ CampusRide includes **Socket.IO** real-time sync for 2 devices:
 
 | Layer | Technologies |
 |---|---|
-| **Frontend** | React 18, Vite 5, Tailwind CSS, React Router v6, Leaflet, Lucide Icons, Canvas Confetti |
+| **Frontend** | React 18, Vite 5, Tailwind CSS, React Router v6, Google Maps JS API (Leaflet fallback), Lucide Icons, Canvas Confetti |
 | **Backend** | Node.js (v24), Express.js, Socket.IO, JWT, bcryptjs |
 | **Database** | MongoDB & Mongoose (with automated High-Reliability MockStore fallback) |
 | **Security** | bcrypt password hashing (10 salt rounds), JWT Bearer auth, SHA-256 token verification |
@@ -218,13 +218,52 @@ npm run dev
 
 ---
 
+## 🐳 Run with Docker (Single-Command, No Local Node/Mongo Needed)
+
+The whole app (React SPA + Express API + MongoDB) runs as containers. A single
+`app` container serves the built SPA and the API on port `5000`.
+
+### Quick start
+```bash
+copy .env.docker.example .env      # then edit values if needed (Firebase/Maps keys)
+docker compose up --build          # build + start app + mongo
+```
+Open **[http://localhost:5000](http://localhost:5000)**.
+
+### Common commands
+```bash
+docker compose up -d               # start in the background
+docker compose logs -f app         # tail app logs
+docker compose down                # stop and remove containers
+docker compose down -v             # stop and also wipe the MongoDB volume
+docker compose up --build          # rebuild after code changes
+```
+
+### How it works
+- `Dockerfile` is a 2-stage build: stage 1 runs `npm ci && npm run build` for
+  `client/`; stage 2 installs server deps (`--omit=dev`) and copies the built SPA
+  into the runtime image, which Express serves.
+- Vite inlines `VITE_*` values at **build time**, so they are passed as build
+  args from the project-root `.env` (see `build.args` in `docker-compose.yml`).
+  Change a key → rebuild (`docker compose up --build`).
+- **MongoDB is optional.** If it is unreachable the server falls back to its
+  in-memory store. To run fully stateless, delete the `mongo` service and the
+  `MONGO_URI` line from `docker-compose.yml`.
+- The image exposes a health check at `/api/health` (`docker compose ps` shows
+  `(healthy)`).
+
+> Note: `client/.env` (used by `npm run dev`) and the root `.env` (used by Docker)
+> are both git-ignored — never commit them.
+
+---
+
 ## 🧮 The 8 Academic Algorithms
 
 ### 1. Haversine Distance Formula
 - **Formula**:
   $$a = \sin^2\left(\frac{\Delta \phi}{2}\right) + \cos(\phi_1)\cos(\phi_2)\sin^2\left(\frac{\Delta \lambda}{2}\right)$$
   $$c = 2 \cdot \text{atan2}(\sqrt{a}, \sqrt{1-a}), \quad d = R \cdot c \quad (R = 6371\text{ km})$$
-- **Where Used**: Computes great-circle distances between GPS coordinates for rider proximity and fare calculations (Bike: ₹5/km, Car: ₹10/km).
+- **Where Used**: Computes great-circle distances between GPS coordinates for rider proximity and fare calculations (Bike: ₹5/km, Car: ₹5/km).
 
 ### 2. K-Nearest Neighbors (KNN)
 - **Input**: Candidate drivers pool, target distance, minimum rating threshold, $K=3$ or $4$.

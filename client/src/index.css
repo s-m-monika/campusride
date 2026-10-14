@@ -11,6 +11,26 @@ body {
   margin: 0;
   padding: 0;
   background-color: #0f172a;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: none;
+}
+
+/* Safe-area helpers for notches / home indicator (iOS & Android). */
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.pt-safe-plus {
+  padding-top: calc(0.875rem + env(safe-area-inset-top));
+}
+
+.pb-safe-plus {
+  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
 }
 
 /* Custom scrollbars */
@@ -43,6 +63,7 @@ body {
 .mobile-frame {
   max-width: 440px;
   min-height: 100vh;
+  min-height: 100dvh;
   margin: 0 auto;
   position: relative;
   background-color: #ffffff;

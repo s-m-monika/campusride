@@ -1,263 +1,257 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useRide, PREDEFINED_LOCATIONS } from '../context/RideContext';
+import { useRide } from '../context/RideContext';
+import { listenDriverProfile } from '../services/firestore';
 import Header from '../components/Header';
 import MapView from '../components/MapView';
-import { Phone, Star, ShieldCheck, MapPin, Navigation, CheckCircle2, PhoneCall } from 'lucide-react';
+import {
+  Phone,
+  Star,
+  MapPin,
+  Loader2,
+  ShieldCheck,
+  RefreshCw,
+  Radio,
+  AlertTriangle,
+} from 'lucide-react';
+import { RIDE_STATUS, LOCATION_STALE_MS, CURRENCY } from '../config/appConfig';
 
+// Rider's live view. Everything is driven by the Firestore ride listener in
+// RideContext (activeRide) plus a listener on the assigned driver's live
+// location. No simulation — if there's no GPS fix yet, we say so.
 const RideTracking = () => {
   const navigate = useNavigate();
-  const { activeRide, updateRideStatus, cancelRide } = useRide();
+  const { activeRide, justCompleted, cancelRide, retrySearch } = useRide();
 
+  const [driverProfile, setDriverProfile] = useState(null);
+  const [driverLoc, setDriverLoc] = useState(null);
+  const [driverLocAt, setDriverLocAt] = useState(null);
+  const [now, setNow] = useState(Date.now());
+
+  // Tick for the "stale location" freshness indicator.
   useEffect(() => {
-    if (!activeRide) {
+    const id = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Ride just completed → go rate it. Otherwise, if there's no active ride,
+  // return home.
+  useEffect(() => {
+    if (justCompleted) {
+      navigate('/completed');
+    } else if (!activeRide) {
       navigate('/home');
     }
-  }, [activeRide, navigate]);
+  }, [activeRide, justCompleted, navigate]);
+
+  // Subscribe to the assigned driver's live location once we have one.
+  const driverId = activeRide?.driverId;
+  useEffect(() => {
+    if (!driverId) {
+      setDriverLoc(null);
+      return undefined;
+    }
+    const unsub = listenDriverProfile(driverId, (dp) => {
+      setDriverProfile(dp);
+      if (dp?.location) {
+        setDriverLoc(dp.location);
+        setDriverLocAt(dp.locationUpdatedAt?.toMillis ? dp.locationUpdatedAt.toMillis() : Date.now());
+      }
+    });
+    return unsub;
+  }, [driverId]);
 
   if (!activeRide) return null;
 
-  const isStarted = activeRide.status === 'RIDE_STARTED';
-  const isCompleted = activeRide.status === 'RIDE_COMPLETED';
+  const status = activeRide.status;
+  const searching = status === RIDE_STATUS.SEARCHING;
+  const noDriver = status === RIDE_STATUS.NO_DRIVER_FOUND;
+  const assigned = !!activeRide.driverInfo;
+  // The ride snapshot is useful as an immediate fallback, but the live
+  // profile is authoritative for vehicle, rating, photo, and location data.
+  const driver = { ...activeRide.driverInfo, ...driverProfile };
+  const otpDigits = String(activeRide.otp || '').split('');
+  const locationStale = driverLocAt && now - driverLocAt > LOCATION_STALE_MS;
 
-  useEffect(() => {
-    if (isCompleted) {
-      navigate('/completed');
-    }
-  }, [isCompleted, navigate]);
+  const statusText = {
+    searching: 'Finding you a nearby captain…',
+    accepted: 'Captain assigned — getting ready',
+    driver_arriving: 'Captain is on the way',
+    driver_arrived: 'Captain has arrived at pickup',
+    in_progress: 'On the way to your destination',
+  }[status] || 'Ride';
 
-  const driver = activeRide.driverDetails || {
-    name: 'Ajay Kumar',
-    vehicleNumber: 'KA02AB1234',
-    vehicleModel: 'TVS Jupiter',
-    usn: '1ST23CS042',
-    phone: '9876543211',
-    rating: 4.8
-  };
-
-  const otpDigits = (activeRide.otp || '3060').split('');
-
-  // Clean initials for captain (No cartoon photos!)
-  const driverInitials = driver.name
-    ? driver.name
-        .split(' ')
-        .map((n) => n[0])
-        .join('')
-        .toUpperCase()
-        .slice(0, 2)
-    : 'AK';
-
-  const pickupObj = PREDEFINED_LOCATIONS.find((l) => l.name === activeRide.pickup) || PREDEFINED_LOCATIONS[0];
-  const destObj = PREDEFINED_LOCATIONS.find((l) => l.name === activeRide.destination) || PREDEFINED_LOCATIONS[1];
-
-  // Exact Google Maps road distance
-  const preciseDistance = destObj.directKm || activeRide.distance || 2.0;
-
-  const driverCoords = isStarted
-    ? {
-        lat: (pickupObj.lat + destObj.lat) / 2,
-        lng: (pickupObj.lng + destObj.lng) / 2
-      }
-    : {
-        lat: pickupObj.lat - 0.002,
-        lng: pickupObj.lng + 0.002
-      };
-
-  const handleSimulateStart = async () => {
-    await updateRideStatus('RIDE_STARTED', activeRide.otp);
-  };
-
-  const handleSimulateComplete = async () => {
-    await updateRideStatus('RIDE_COMPLETED', null, { paymentStatus: 'Paid', paymentMethod: 'UPI' });
-    navigate('/completed');
-  };
+  const driverInitials = driver?.name
+    ? driver.name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)
+    : 'CP';
 
   return (
     <div className="flex flex-col min-h-screen bg-white">
-      {/* Header with Red SOS button */}
-      <Header
-        title=""
-        showBack={false}
-        showSOS={true}
-        showHelp={false}
-        rightElement={
-          <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full">
-            Live Route
-          </span>
-        }
-      />
+      <Header title="" showBack={false} showSOS showHelp={false} rightElement={
+        <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full">
+          Live
+        </span>
+      } />
 
       <div className="flex-1 flex flex-col relative overflow-hidden">
-        {/* Live Interactive Map */}
-        <div className="h-[44vh] w-full relative">
+        <div className="h-[42vh] w-full relative">
           <MapView
-            center={[driverCoords.lat, driverCoords.lng]}
-            zoom={15}
-            pickupCoords={{ lat: pickupObj.lat, lng: pickupObj.lng }}
-            dropCoords={{ lat: destObj.lat, lng: destObj.lng }}
-            driverCoords={driverCoords}
-            driverType={activeRide.vehicleType || 'Bike'}
-            showRoute={true}
+            center={[activeRide.pickupCoords.lat, activeRide.pickupCoords.lng]}
+            zoom={14}
+            pickupCoords={activeRide.pickupCoords}
+            dropCoords={activeRide.destinationCoords}
+            driverCoords={driverLoc}
+            driverType={activeRide.vehicleType}
+            showRoute={false}
             className="h-full w-full rounded-none"
           />
-
-          <div className="absolute top-4 left-4 z-20 bg-slate-900/90 text-white backdrop-blur-md px-3.5 py-1.5 rounded-2xl shadow-lg border border-slate-700 flex items-center space-x-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span className="text-xs font-bold font-mono">
-              {isStarted ? 'En Route to Drop-off' : '800 m to pickup'}
-            </span>
+          <div className="absolute top-4 left-4 z-20 bg-slate-900/90 text-white px-3.5 py-1.5 rounded-2xl shadow-lg flex items-center space-x-2">
+            {searching ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+            ) : (
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+            )}
+            <span className="text-xs font-bold">{statusText}</span>
           </div>
         </div>
 
-        {/* BOTTOM CONTENT (FIGMA PAGE 8 & 9) */}
-        <div className="flex-1 -mt-6 bg-white rounded-t-3xl shadow-2xl z-20 px-5 pt-4 pb-6 flex flex-col justify-between overflow-y-auto border-t border-gray-100">
-          <div>
-            <div className="w-12 h-1.5 bg-gray-200 rounded-full mx-auto mb-3" />
+        <div className="flex-1 -mt-6 bg-white rounded-t-3xl shadow-2xl z-20 px-5 pt-4 pb-6 flex flex-col overflow-y-auto border-t border-gray-100">
+          <div className="w-12 h-1.5 bg-gray-200 rounded-full mx-auto mb-3" />
 
-            {!isStarted ? (
-              /* FIGMA PAGE 8: DRIVER ARRIVING & START PIN */
-              <div className="space-y-4">
-                <div>
-                  <h3 className="text-xl font-black text-emerald-600 tracking-tight">
-                    Pickup in 2 mins
-                  </h3>
-                  <p className="text-sm font-bold text-gray-800">
-                    Captain on the way
-                  </p>
-                </div>
+          {/* SEARCHING */}
+          {searching && (
+            <div className="py-6 text-center space-y-3">
+              <div className="w-14 h-14 mx-auto rounded-full bg-emerald-50 flex items-center justify-center">
+                <Radio className="w-7 h-7 text-emerald-500 animate-pulse" />
+              </div>
+              <h3 className="text-lg font-black text-gray-900">Looking for a captain</h3>
+              <p className="text-xs text-gray-500">
+                We're offering your request to nearby verified drivers. This usually takes under a minute.
+              </p>
+            </div>
+          )}
 
-                {/* 4-DIGIT PIN IN BOXED DIGITS (FIGMA PAGE 8) */}
-                <div className="p-3.5 bg-gray-50 rounded-2xl border border-gray-200 flex items-center justify-between">
-                  <span className="text-xs font-bold text-gray-700">
-                    Start your ride with PIN
-                  </span>
+          {/* NO DRIVER FOUND */}
+          {noDriver && (
+            <div className="py-6 text-center space-y-3">
+              <div className="w-14 h-14 mx-auto rounded-full bg-amber-50 flex items-center justify-center">
+                <AlertTriangle className="w-7 h-7 text-amber-500" />
+              </div>
+              <h3 className="text-lg font-black text-gray-900">No captain available</h3>
+              <p className="text-xs text-gray-500">No nearby driver accepted in time. You can try again.</p>
+              <button
+                onClick={retrySearch}
+                className="inline-flex items-center space-x-1.5 px-4 py-2.5 bg-slate-900 text-white font-bold rounded-2xl text-xs"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>Search again</span>
+              </button>
+            </div>
+          )}
 
-                  <div className="flex space-x-2">
-                    {otpDigits.map((digit, idx) => (
-                      <div
-                        key={idx}
-                        className="w-8 h-9 bg-white rounded-xl border-2 border-gray-300 shadow-sm flex items-center justify-center font-black text-base text-gray-900"
-                      >
-                        {digit}
-                      </div>
-                    ))}
+          {/* ASSIGNED — show driver + OTP */}
+          {assigned && !searching && !noDriver && (
+            <div className="space-y-4">
+              {/* OTP card — visible only to the rider (this is their session) */}
+              {status !== RIDE_STATUS.IN_PROGRESS && (
+                <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-200">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-black uppercase text-emerald-700">Pickup PIN</p>
+                      <p className="text-[11px] text-emerald-800/80">Share with your captain to start</p>
+                    </div>
+                    <div className="flex space-x-2">
+                      {otpDigits.map((d, i) => (
+                        <div
+                          key={i}
+                          className="w-9 h-10 bg-white rounded-xl border-2 border-emerald-300 flex items-center justify-center font-black text-lg text-gray-900"
+                        >
+                          {d}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
+              )}
 
-                {/* DRIVER CARD (RAPIDO/OLA STYLE - CLEAN INITIALS, NO FUNNY PICS) */}
-                <div className="p-4 bg-white rounded-2xl border-2 border-gray-100 shadow-sm flex items-center justify-between">
-                  <div>
-                    {/* Number plate box */}
-                    <span className="inline-block px-2.5 py-0.5 bg-yellow-300 text-gray-900 font-mono font-black text-xs rounded-md border border-yellow-400 shadow-xs mb-1">
+              {status === RIDE_STATUS.IN_PROGRESS && (
+                <div className="p-3 bg-indigo-50 rounded-2xl border border-indigo-200 text-xs text-indigo-800 font-bold flex items-center space-x-2">
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Ride started. Enjoy your trip to {activeRide.destination}.</span>
+                </div>
+              )}
+
+              {/* Driver card */}
+              <div className="p-4 bg-white rounded-2xl border-2 border-gray-100 shadow-sm flex items-center justify-between">
+                <div>
+                  {driver.vehicleNumber && (
+                    <span className="inline-block px-2.5 py-0.5 bg-yellow-300 text-gray-900 font-mono font-black text-xs rounded-md border border-yellow-400 mb-1">
                       {driver.vehicleNumber}
                     </span>
-                    <p className="text-xs font-bold text-gray-700">
-                      {driver.vehicleModel}
-                    </p>
-                    <p className="text-sm font-extrabold text-blue-600 mt-0.5">
-                      {driver.name}
-                    </p>
-                    <p className="text-[11px] font-mono text-gray-500">
-                      {driver.usn}
-                    </p>
-
+                  )}
+                  <p className="text-xs font-bold text-gray-700">
+                    {driver.vehicleModel} · {driver.vehicleType}
+                  </p>
+                  <p className="text-sm font-extrabold text-blue-600 mt-0.5">{driver.name}</p>
+                  {driver.phone && (
                     <a
                       href={`tel:${driver.phone}`}
-                      className="inline-flex items-center space-x-1 mt-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-xl hover:bg-emerald-100 border border-emerald-200"
+                      className="inline-flex items-center space-x-1 mt-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-xl border border-emerald-200"
                     >
                       <Phone className="w-3.5 h-3.5" />
                       <span>{driver.phone}</span>
                     </a>
-                  </div>
-
-                  <div className="flex flex-col items-center">
-                    <div className="w-14 h-14 rounded-2xl bg-slate-900 text-white font-black text-lg flex items-center justify-center shadow-md">
-                      {driverInitials}
-                    </div>
-                    <div className="flex items-center space-x-0.5 mt-1 text-xs font-extrabold text-amber-500">
-                      <Star className="w-3.5 h-3.5 fill-amber-400" />
-                      <span>{driver.rating || '4.8'}</span>
-                    </div>
-                  </div>
+                  )}
                 </div>
-              </div>
-            ) : (
-              /* FIGMA PAGE 9: RIDE IN PROGRESS / TRACKING */
-              <div className="space-y-4">
-                {/* Driver Details Card (Figma Page 9) */}
-                <div className="p-4 bg-white rounded-2xl border-2 border-gray-100 shadow-sm flex items-center justify-between">
-                  <div>
-                    <span className="inline-block px-2.5 py-0.5 bg-yellow-300 text-gray-900 font-mono font-black text-xs rounded-md border border-yellow-400 shadow-xs mb-1">
-                      {driver.vehicleNumber}
-                    </span>
-                    <p className="text-xs font-bold text-gray-700">
-                      {driver.vehicleModel}
-                    </p>
-                    <p className="text-sm font-extrabold text-blue-600 mt-0.5">
-                      {driver.name}
-                    </p>
-                    <p className="text-[11px] font-mono text-gray-500">
-                      {driver.usn}
-                    </p>
-                    <a
-                      href={`tel:${driver.phone}`}
-                      className="inline-flex items-center space-x-1 mt-1 text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-200"
-                    >
-                      <Phone className="w-3 h-3" />
-                      <span>{driver.phone}</span>
-                    </a>
-                  </div>
-
-                  <div className="w-14 h-14 rounded-2xl bg-slate-900 text-white font-black text-lg flex items-center justify-center shadow-md">
+                <div className="flex flex-col items-center">
+                  <div className="w-14 h-14 rounded-2xl bg-slate-900 text-white font-black text-lg flex items-center justify-center">
                     {driverInitials}
                   </div>
-                </div>
-
-                {/* FIGMA PAGE 9: "1.5 km to destination, 5 min remaining" */}
-                <div className="p-6 bg-gray-50 rounded-3xl border border-gray-200 text-center space-y-1">
-                  <h3 className="text-xl font-black text-gray-900 tracking-tight">
-                    {preciseDistance} km to destination
-                  </h3>
-                  <p className="text-sm font-extrabold text-gray-500">
-                    {Math.max(3, Math.round(preciseDistance * 2.5))} min remaining
-                  </p>
+                  {driver.rating > 0 && (
+                    <div className="flex items-center space-x-0.5 mt-1 text-xs font-extrabold text-amber-500">
+                      <Star className="w-3.5 h-3.5 fill-amber-400" />
+                      <span>{driver.rating}</span>
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
-          </div>
 
-          {/* TWO-DEVICE DEMO SIMULATION CONTROLS */}
-          <div className="pt-4 space-y-2 border-t border-gray-100 mt-4">
-            <div className="bg-slate-50 p-2.5 rounded-2xl border border-slate-200">
-              <span className="text-[10px] font-extrabold uppercase text-slate-500 block mb-1">
-                Project Evaluation Demo Controller
-              </span>
-              {!isStarted ? (
-                <button
-                  onClick={handleSimulateStart}
-                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-sm"
-                >
-                  <Navigation className="w-3.5 h-3.5" />
-                  <span>Simulate Driver Starts Ride (PIN Verified ✓)</span>
-                </button>
-              ) : (
-                <button
-                  onClick={handleSimulateComplete}
-                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-sm"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Simulate Ride Completed (Drop-off)</span>
-                </button>
-              )}
+              {/* Driver location freshness */}
+              <div className="flex items-center justify-between text-[11px] px-1">
+                <span className="flex items-center space-x-1.5 text-gray-500">
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span>
+                    {driverLoc
+                      ? locationStale
+                        ? 'Captain location may be out of date'
+                        : 'Captain location is live'
+                      : 'Waiting for captain location…'}
+                  </span>
+                </span>
+                {locationStale && <span className="text-amber-600 font-bold">stale</span>}
+              </div>
+
+              <div className="flex items-center justify-between pt-2 border-t border-gray-100 text-sm">
+                <span className="text-gray-500 font-semibold">
+                  {activeRide.distanceKm} km · ~{activeRide.durationMin} min
+                </span>
+                <span className="font-black text-gray-900">
+                  {CURRENCY}
+                  {activeRide.fare}
+                </span>
+              </div>
             </div>
+          )}
 
+          {/* Cancel (allowed before the ride starts) */}
+          {status !== RIDE_STATUS.IN_PROGRESS && (
             <button
               onClick={cancelRide}
-              className="w-full py-1.5 text-xs font-semibold text-gray-400 hover:text-red-500 transition-colors"
+              className="mt-4 w-full py-2 text-xs font-semibold text-gray-400 hover:text-red-500"
             >
-              Cancel Ride Request
+              Cancel ride
             </button>
-          </div>
+          )}
         </div>
       </div>
     </div>

@@ -1,0 +1,29 @@
+# Keep the build context small and never bake secrets/build artefacts into images.
+
+# Dependencies (installed inside the image)
+**/node_modules
+
+# Build output (rebuilt in the client-build stage)
+**/dist
+
+# Env files — Vite values are injected as build args, not copied
+**/.env
+**/.env.*
+!**/.env.example
+
+# Icon source (the generated icons already live in client/public)
+**/app-icon-source.png
+
+# VCS / editors / logs / OS cruft
+.git
+.gitignore
+.firebase
+firebase-debug.log
+**/*.log
+**/.DS_Store
+**/Thumbs.db
+**/.vscode
+**/.idea
+Dockerfile
+docker-compose.yml
+README.md
