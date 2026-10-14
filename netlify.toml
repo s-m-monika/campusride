@@ -1,0 +1,15 @@
+# Netlify builds the Vite client (the Firebase app). The Express `server/`
+# folder is a legacy backend and is not deployed.
+[build]
+  base = "client"
+  command = "npm install --include=dev && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# SPA fallback so deep links / refreshes on client-side routes load the app.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

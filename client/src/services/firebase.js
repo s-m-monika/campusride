@@ -29,7 +29,14 @@ if (!isFirebaseConfigured) {
   );
 }
 
-const app = initializeApp(firebaseConfig);
+// Without a real config, getAuth() throws `auth/invalid-api-key` and the whole
+// app renders blank. Initialise with placeholders so demo mode still works;
+// no Firebase calls are made while DEMO_MODE is on.
+const app = initializeApp(
+  isFirebaseConfigured
+    ? firebaseConfig
+    : { apiKey: 'demo-api-key', projectId: 'demo-campusride', appId: 'demo-app-id' }
+);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export default app;
