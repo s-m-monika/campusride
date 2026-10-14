@@ -24,19 +24,25 @@ export function onGoogleAuthFailure(cb) {
   return () => authFailureListeners.delete(cb);
 }
 
+// Mark Google Maps as unusable and notify the UI so it can fall back to Leaflet.
+// Safe to call more than once (only the first failure is reported).
+export function reportGoogleMapsFailure(err) {
+  if (authFailed) return;
+  authFailed = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[CampusRide] Google Maps unavailable (billing/key/API not enabled). ' +
+      'Falling back to the offline map.',
+    err?.message || ''
+  );
+  authFailureListeners.forEach((cb) => cb());
+}
+
 function installAuthFailureHook() {
   if (typeof window === 'undefined') return;
   if (window.__campusrideGmapsAuthHook) return;
   window.__campusrideGmapsAuthHook = true;
-  window.gm_authFailure = () => {
-    authFailed = true;
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[CampusRide] Google Maps auth failure (billing/key/API not enabled). ' +
-        'Falling back to the offline map.'
-    );
-    authFailureListeners.forEach((cb) => cb());
-  };
+  window.gm_authFailure = () => reportGoogleMapsFailure();
 }
 
 export function hasGoogleMapsKey() {

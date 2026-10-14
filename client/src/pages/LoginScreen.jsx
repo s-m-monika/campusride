@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import Header from '../components/Header';
 import { Mail, Lock, ArrowRight, AlertCircle, Building2, User, Car, ShieldCheck } from 'lucide-react';
 import { COLLEGE_NAME, COLLEGE_SHORT, ROLES, ADMIN_EMAILS } from '../config/appConfig';
+import { DEMO_MODE } from '../services/firebase';
 
 // Login with a User / Driver / Admin selector. The selector routes the user
 // after sign-in and guards the Admin tab. Real admin authority comes from the
@@ -16,7 +17,7 @@ const TABS = [
 
 const LoginScreen = () => {
   const navigate = useNavigate();
-  const { login, logout } = useAuth();
+  const { login } = useAuth();
 
   const [tab, setTab] = useState(ROLES.RIDER);
   const [email, setEmail] = useState('');
@@ -32,11 +33,6 @@ const LoginScreen = () => {
       setErrorMsg('Enter your email and password.');
       return;
     }
-    // Admin tab: only the authorized admin email may attempt this path.
-    if (tab === ROLES.ADMIN && !ADMIN_EMAILS.includes(email.trim().toLowerCase())) {
-      setErrorMsg('This email is not an authorized admin account.');
-      return;
-    }
 
     setLoading(true);
     const res = await login(email, password, { demo: demoMode });
@@ -47,16 +43,10 @@ const LoginScreen = () => {
       return;
     }
 
+    // Always route by the account's REAL role — the role tab is only a visual
+    // hint, so a valid account is never blocked or shown an error for choosing
+    // the "wrong" tab.
     const role = res.profile?.role;
-
-    // If the Admin tab was used, the account's real role MUST be admin.
-    if (tab === ROLES.ADMIN && role !== ROLES.ADMIN) {
-      await logout();
-      setErrorMsg('This account does not have admin access.');
-      return;
-    }
-
-    // Route by the account's real role (source of truth).
     if (role === ROLES.ADMIN) navigate('/admin');
     else if (role === ROLES.DRIVER) navigate('/driver');
     else navigate('/home');
@@ -113,7 +103,7 @@ const LoginScreen = () => {
         {isAdminTab && (
           <div className="mb-3 p-3 bg-slate-900 text-slate-200 rounded-2xl text-[11px] flex items-start space-x-2">
             <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
-            <span>Admin access is restricted to the authorized college administrator account.</span>
+            <span>Sign in with your administrator account. You'll be routed to the admin portal automatically based on your account role.</span>
           </div>
         )}
 
@@ -173,14 +163,16 @@ const LoginScreen = () => {
           </button>
         </form>
 
-        <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-2xl">
-          <p className="text-[11px] font-black text-blue-900 uppercase">Local demo mode</p>
-          <p className="text-[11px] text-blue-800 mt-1">Firebase credentials are not configured, so this uses the real ride screens with a local simulated driver.</p>
-          <div className="grid grid-cols-2 gap-2 mt-3">
-            <button type="button" onClick={() => demoLogin(ROLES.RIDER)} className="py-2 rounded-xl bg-white border border-blue-200 text-xs font-bold text-blue-800">Demo passenger</button>
-            <button type="button" onClick={() => demoLogin(ROLES.DRIVER)} className="py-2 rounded-xl bg-white border border-blue-200 text-xs font-bold text-blue-800">Demo driver</button>
+        {DEMO_MODE && (
+          <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-2xl">
+            <p className="text-[11px] font-black text-blue-900 uppercase">Local demo mode</p>
+            <p className="text-[11px] text-blue-800 mt-1">Firebase credentials are not configured, so this uses the real ride screens with a local simulated driver.</p>
+            <div className="grid grid-cols-2 gap-2 mt-3">
+              <button type="button" onClick={() => demoLogin(ROLES.RIDER)} className="py-2 rounded-xl bg-white border border-blue-200 text-xs font-bold text-blue-800">Demo passenger</button>
+              <button type="button" onClick={() => demoLogin(ROLES.DRIVER)} className="py-2 rounded-xl bg-white border border-blue-200 text-xs font-bold text-blue-800">Demo driver</button>
+            </div>
           </div>
-        </div>
+        )}
 
         {!isAdminTab && (
           <div className="text-center py-5">

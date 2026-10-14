@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Compass, Clock, Cpu, User, Bike } from 'lucide-react';
+import { Compass, Clock, User, Bike } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useRide } from '../context/RideContext';
 
@@ -14,13 +14,11 @@ const BottomNav = () => {
     ? [
         { to: '/driver', icon: Bike, label: 'Dashboard' },
         { to: '/history', icon: Clock, label: 'Rides' },
-        { to: '/algorithms', icon: Cpu, label: 'Algorithms' },
         { to: '/profile', icon: User, label: 'Profile' }
       ]
     : [
         { to: '/home', icon: Compass, label: 'Home' },
         { to: activeRide ? '/tracking' : '/history', icon: Clock, label: activeRide ? 'Active Ride' : 'Rides', badge: !!activeRide },
-        { to: '/algorithms', icon: Cpu, label: 'Algorithms' },
         { to: '/profile', icon: User, label: 'Profile' }
       ];
 

@@ -235,6 +235,8 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const logout = useCallback(async () => {
+    // Clear the one-time verification skip so the next account starts fresh.
+    localStorage.removeItem('campusride_skip_verify');
     if (useDemoMode()) {
       sessionStorage.removeItem(DEMO_USER_KEY);
       setFirebaseUser(null);

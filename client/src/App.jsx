@@ -17,7 +17,6 @@ import RideCompleted from './pages/RideCompleted';
 import RiderRegistration from './pages/RiderRegistration';
 import RiderDashboard from './pages/RiderDashboard';
 import RideHistory from './pages/RideHistory';
-import AlgorithmShowcase from './pages/AlgorithmShowcase';
 import ProfileScreen from './pages/ProfileScreen';
 import OcrVerification from './pages/OcrVerification';
 
@@ -65,8 +64,8 @@ const ProtectedRoute = ({ children, requiredRole }) => {
     (!user.verificationStatus ||
       user.verificationStatus === VERIFICATION_STATUS.UNSUBMITTED ||
       user.verificationStatus === VERIFICATION_STATUS.REJECTED);
-  const skippedThisSession = sessionStorage.getItem('campusride_skip_verify') === '1';
-  if (needsIdVerification && !skippedThisSession && location.pathname !== '/verify-id') {
+  const skippedVerification = localStorage.getItem('campusride_skip_verify') === '1';
+  if (needsIdVerification && !skippedVerification && location.pathname !== '/verify-id') {
     return <Navigate to="/verify-id" replace />;
   }
 
@@ -83,10 +82,28 @@ function MobileShell({ children }) {
   );
 }
 
+// Entry gate: a signed-in user is sent straight to their dashboard instead of
+// seeing the splash/login again ("show create then login"). Only anonymous
+// visitors see the marketing splash.
+function EntryGate() {
+  const { isAuthenticated, loading, user } = useAuth();
+  if (loading) return <FullScreenLoader />;
+  if (isAuthenticated && user) {
+    const dest =
+      user.role === ROLES.ADMIN ? '/admin' : user.role === ROLES.DRIVER ? '/driver' : '/home';
+    return <Navigate to={dest} replace />;
+  }
+  return (
+    <MobileShell>
+      <SplashScreen />
+    </MobileShell>
+  );
+}
+
 function AppRoutes() {
   return (
     <Routes>
-      <Route path="/" element={<MobileShell><SplashScreen /></MobileShell>} />
+      <Route path="/" element={<EntryGate />} />
       <Route path="/login" element={<MobileShell><LoginScreen /></MobileShell>} />
       <Route path="/register" element={<MobileShell><RegisterScreen /></MobileShell>} />
       <Route path="/role" element={<MobileShell><RoleSelectScreen /></MobileShell>} />
@@ -104,7 +121,6 @@ function AppRoutes() {
 
       {/* Shared */}
       <Route path="/history" element={<ProtectedRoute><MobileShell><RideHistory /></MobileShell></ProtectedRoute>} />
-      <Route path="/algorithms" element={<ProtectedRoute><MobileShell><AlgorithmShowcase /></MobileShell></ProtectedRoute>} />
       <Route path="/profile" element={<ProtectedRoute><MobileShell><ProfileScreen /></MobileShell></ProtectedRoute>} />
 
       {/* Admin portal — responsive full-width, not inside the mobile frame */}

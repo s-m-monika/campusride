@@ -272,7 +272,7 @@ const OcrVerification = () => {
 
         <button
           onClick={() => {
-            sessionStorage.setItem('campusride_skip_verify', '1');
+            localStorage.setItem('campusride_skip_verify', '1');
             navigate(user?.role === 'driver' ? '/driver-setup' : '/home');
           }}
           className="w-full py-2 text-xs font-semibold text-gray-400 hover:text-gray-700 flex items-center justify-center space-x-1"

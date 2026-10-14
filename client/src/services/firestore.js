@@ -496,6 +496,22 @@ export function listenOpenRequestsForDriver(opts, cb, onError) {
   );
 }
 
+// One-shot fetch of the open requests a driver could serve. Used as a
+// resilience fallback alongside the realtime listener: mobile browsers throttle
+// or suspend the realtime websocket while the app is backgrounded, so we re-sync
+// immediately whenever the driver brings the app back to the foreground.
+export async function getOpenRequests() {
+  if (useMock()) {
+    return [...mock.rides.values()].filter((ride) => ride.status === RIDE_STATUS.SEARCHING);
+  }
+  const snap = await getDocs(
+    query(collection(db, COL.rideRequests), where('status', '==', RIDE_STATUS.SEARCHING))
+  );
+  const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  items.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+  return items;
+}
+
 // Driver's current active (claimed) ride. Single-field query (driverId) +
 // in-memory status filter.
 export function listenActiveRideForDriver(uid, cb) {

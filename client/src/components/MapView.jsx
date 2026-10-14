@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { loadGoogleMaps, hasGoogleMapsKey, onGoogleAuthFailure, isGoogleAuthFailed } from '../services/googleMaps';
+import { loadGoogleMaps, hasGoogleMapsKey, onGoogleAuthFailure, isGoogleAuthFailed, reportGoogleMapsFailure } from '../services/googleMaps';
 
 /* -------------------------------------------------------------------------- *
  *  Shared SVG marker artwork.
@@ -84,15 +84,25 @@ const GoogleMapView = ({
   useEffect(() => {
     const node = containerRef.current;
     if (!node) return undefined;
+    if (!window.google?.maps?.Map) {
+      reportGoogleMapsFailure();
+      return undefined;
+    }
     const g = window.google.maps;
-    if (!node.__campusrideGmap) {
-      node.__campusrideGmap = new g.Map(node, {
-        center: { lat: center[0], lng: center[1] },
-        zoom,
-        disableDefaultUI: true,
-        gestureHandling: 'greedy',
-        clickableIcons: false,
-      });
+    try {
+      if (!node.__campusrideGmap) {
+        node.__campusrideGmap = new g.Map(node, {
+          center: { lat: center[0], lng: center[1] },
+          zoom,
+          disableDefaultUI: true,
+          gestureHandling: 'greedy',
+          clickableIcons: false,
+        });
+      }
+    } catch (err) {
+      // Never let a map/key problem crash the surrounding dashboard.
+      reportGoogleMapsFailure(err);
+      return undefined;
     }
     mapRef.current = node.__campusrideGmap;
     return () => {
@@ -108,6 +118,7 @@ const GoogleMapView = ({
     if (!map) return;
     const g = window.google.maps;
 
+    try {
     // Clear previous overlays and the click listener.
     overlaysRef.current.forEach((o) => o.setMap(null));
     overlaysRef.current = [];
@@ -161,6 +172,9 @@ const GoogleMapView = ({
     } else {
       map.setCenter({ lat: center[0], lng: center[1] });
       map.setZoom(zoom);
+    }
+    } catch (err) {
+      reportGoogleMapsFailure(err);
     }
   }, [center, zoom, pickupCoords, dropCoords, driverCoords, driverType, showRoute, routeGeometry, onMapClick]);
 

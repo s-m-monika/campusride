@@ -8,6 +8,7 @@ import {
   setDriverAvailability,
   setDriverLocation,
   listenOpenRequestsForDriver,
+  getOpenRequests,
   listenActiveRideForDriver,
   claimRideRequest,
   advanceRideStatus,
@@ -54,6 +55,8 @@ const RiderDashboard = () => {
   // isn't re-shown the same card (the request stays open for other drivers).
   const [dismissed, setDismissed] = useState(() => new Set());
   const stopWatchRef = useRef(null);
+  const sharingRef = useRef(false);
+  const prevRequestCountRef = useRef(0);
   const pinkEligible = !!driverProfile?.pinkRideEligible;
 
   const dismiss = (ride) => setDismissed((prev) => new Set(prev).add(ride.id));
@@ -91,6 +94,8 @@ const RiderDashboard = () => {
   // Location sharing: starts only when the driver goes online and grants
   // permission; stops when offline or on unmount. Writes are throttled.
   const startSharing = async () => {
+    if (sharingRef.current) return;
+    sharingRef.current = true;
     setLocError('');
     try {
       const first = await getCurrentPosition();
@@ -98,6 +103,7 @@ const RiderDashboard = () => {
       await setDriverLocation(uid, first.lat, first.lng);
     } catch (e) {
       setLocError(e.message);
+      sharingRef.current = false; // allow a later retry
       throw e;
     }
     stopWatchRef.current = watchPositionThrottled(
@@ -114,6 +120,7 @@ const RiderDashboard = () => {
   };
 
   const stopSharing = () => {
+    sharingRef.current = false;
     if (stopWatchRef.current) {
       stopWatchRef.current();
       stopWatchRef.current = null;
@@ -122,21 +129,89 @@ const RiderDashboard = () => {
 
   useEffect(() => () => stopSharing(), []);
 
+  // Keep the driver's availability heartbeat fresh. GPS only fires when the
+  // position actually changes, so a stationary driver's `lastSeen` would go
+  // stale and the demo simulator would step in / other clients would treat the
+  // captain as offline. A light heartbeat keeps "online" accurate. When the
+  // app is closed / backgrounded the heartbeat stops, so the driver correctly
+  // ages out (after DRIVER_FRESH_MS) instead of appearing online forever.
+  useEffect(() => {
+    if (!online || !uid) return undefined;
+    setDriverAvailability(uid, true).catch(() => {});
+    const id = setInterval(() => {
+      setDriverAvailability(uid, true).catch(() => {});
+    }, 30000);
+    return () => clearInterval(id);
+  }, [online, uid]);
+
+  // Restore the online state from Firestore after a reload / installed-app
+  // relaunch. Without this the local UI can say "offline" (listener not running)
+  // while Firestore still marks the captain available — then requests would be
+  // offered to nobody. We only auto-resume when Firestore says "available" (we
+  // never force the driver offline here, to avoid racing a manual toggle).
+  useEffect(() => {
+    if (driverProfile?.availability !== 'available') return;
+    setOnline(true);
+    startSharing().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driverProfile?.availability]);
+
+  // Alert (vibrate) when a new incoming request appears.
+  useEffect(() => {
+    if (visibleRequests.length > prevRequestCountRef.current && visibleRequests.length > 0) {
+      navigator.vibrate?.([140, 70, 140]);
+    }
+    prevRequestCountRef.current = visibleRequests.length;
+  }, [visibleRequests.length]);
+
+  // Mobile resilience: mobile browsers throttle/suspend the realtime websocket
+  // while the installed app is backgrounded, so a request that arrives while the
+  // captain is away would otherwise not show until much later. Re-sync the open
+  // request feed the moment the app returns to the foreground.
+  useEffect(() => {
+    if (!online || activeRide || !uid) return undefined;
+    const sync = () => {
+      if (document.visibilityState === 'hidden') return;
+      getOpenRequests()
+        .then((items) => setOpenRequests(items))
+        .catch(() => {});
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    window.addEventListener('focus', sync);
+    window.addEventListener('pageshow', sync);
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      window.removeEventListener('focus', sync);
+      window.removeEventListener('pageshow', sync);
+    };
+  }, [online, activeRide, uid]);
+
   const toggleOnline = async () => {
     setLocError('');
     if (!online) {
-      // Go online immediately so requests flow. Location sharing is best-effort:
-      // if the user denies GPS we still stay online (the rider just won't see a
-      // live dot). We never block receiving requests on location permission.
-      await setDriverAvailability(uid, true);
+      // Go online immediately so the request listener starts (and the button
+      // flips to "online"). Persisting availability is done right after, and a
+      // failure there is surfaced instead of silently leaving the driver stuck.
       setOnline(true);
+      try {
+        await setDriverAvailability(uid, true);
+      } catch (e) {
+        setLocError(`Could not set availability: ${e?.message || e}`);
+      }
+      // Location sharing is best-effort: if the user denies GPS we still stay
+      // online (the rider just won't see a live dot).
       startSharing().catch(() => {
         /* locError already set; staying online is fine */
       });
     } else {
       stopSharing();
-      await setDriverAvailability(uid, false);
       setOnline(false);
+      try {
+        await setDriverAvailability(uid, false);
+      } catch (e) {
+        setLocError(`Could not set availability: ${e?.message || e}`);
+      }
     }
   };
 
